@@ -46,14 +46,21 @@ def generate_jwt() -> str:
     now = int(time.time())
     payload = {
         "iss": CA_CLIENT_ID,
-        "exp": now + 600,   # 10분 유효
+        "exp": now + 600,
         "jti": str(uuid.uuid4()),
         "aud": "tableau",
         "sub": TABLEAU_USER,
-        "scp": ["tableau:views:embed", "tableau:metrics:embed"],
+        "scp": ["tableau:views:embed"],
     }
     headers = {"kid": CA_SECRET_ID, "iss": CA_CLIENT_ID}
-    return jwt.encode(payload, CA_SECRET_VALUE, algorithm="HS256", headers=headers)
+    token = jwt.encode(
+        payload,
+        CA_SECRET_VALUE,
+        algorithm="HS256",
+        headers=headers,
+    )
+    # PyJWT 버전에 따라 str/bytes 반환 다름
+    return token if isinstance(token, str) else token.decode("utf-8")
 
 VIEWS = [
     {"label": "전사 Summary",  "path": st.secrets.get("VIEW_SUMMARY",  TABLEAU_VIEW)},
