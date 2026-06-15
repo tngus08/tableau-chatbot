@@ -2,6 +2,9 @@ import streamlit as st
 import streamlit.components.v1 as components
 import google.generativeai as genai
 import re
+import uuid
+import time
+import jwt
 
 st.set_page_config(
     page_title="Tableau AI Assistant",
@@ -29,6 +32,28 @@ if "messages" not in st.session_state:
 TABLEAU_URL  = st.secrets.get("TABLEAU_URL",  "https://public.tableau.com")
 TABLEAU_VIEW = st.secrets.get("TABLEAU_VIEW", "")
 GEMINI_KEY   = st.secrets.get("GEMINI_API_KEY", "")
+
+# ── Tableau Connected App ─────────────────────────────────────────────────────
+CA_CLIENT_ID    = st.secrets.get("TABLEAU_CONNECTED_APP_CLIENT_ID", "")
+CA_SECRET_ID    = st.secrets.get("TABLEAU_CONNECTED_APP_SECRET_ID", "")
+CA_SECRET_VALUE = st.secrets.get("TABLEAU_CONNECTED_APP_SECRET_VALUE", "")
+TABLEAU_USER    = st.secrets.get("TABLEAU_USER", "")  # Tableau Cloud 로그인 이메일
+
+def generate_jwt() -> str:
+    """Tableau Connected App JWT 토큰 생성"""
+    if not (CA_CLIENT_ID and CA_SECRET_ID and CA_SECRET_VALUE):
+        return ""
+    now = int(time.time())
+    payload = {
+        "iss": CA_CLIENT_ID,
+        "exp": now + 600,   # 10분 유효
+        "jti": str(uuid.uuid4()),
+        "aud": "tableau",
+        "sub": TABLEAU_USER,
+        "scp": ["tableau:views:embed", "tableau:metrics:embed"],
+    }
+    headers = {"kid": CA_SECRET_ID, "iss": CA_CLIENT_ID}
+    return jwt.encode(payload, CA_SECRET_VALUE, algorithm="HS256", headers=headers)
 
 VIEWS = [
     {"label": "전사 Summary",  "path": st.secrets.get("VIEW_SUMMARY",  TABLEAU_VIEW)},
@@ -334,7 +359,7 @@ textarea::placeholder {{ color:#334155; }}
 
   <!-- Tableau -->
   <div class="tableau-panel">
-    <tableau-viz id="tviz" src="{tableau_full_url}" toolbar="hidden" hide-tabs="true"></tableau-viz>
+    <tableau-viz id="tviz" src="{tableau_full_url}" token="{generate_jwt()}" toolbar="hidden" hide-tabs="true"></tableau-viz>
   </div>
 
   <!-- Chat -->
