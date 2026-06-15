@@ -2,9 +2,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import google.generativeai as genai
 import re
-from tableau_mcp import get_tableau_context, fetch_view_data, search_tableau_content
 
-# ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Tableau AI Assistant",
     page_icon="📊",
@@ -12,61 +10,20 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ── Global CSS ────────────────────────────────────────────────────────────────
+# ── 최소한의 Streamlit 기본 UI 제거 ──────────────────────────────────────────
 st.markdown("""
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-  [data-testid="stAppViewContainer"] { background: #0f1117; }
-  [data-testid="stHeader"] { display: none; }
-  [data-testid="stToolbar"] { display: none; }
-  section[data-testid="stMain"] > div { padding: 0 !important; }
-  [data-testid="stVerticalBlock"] { gap: 0 !important; padding: 0 !important; }
-  * { font-family: 'Inter', sans-serif; box-sizing: border-box; }
-
-  .nav-bar {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 12px 24px; background: #161b27;
-    border-bottom: 1px solid #1f2937;
-  }
-  .nav-left { display: flex; align-items: center; gap: 10px; }
-  .nav-icon {
-    width: 30px; height: 30px; background: #3b82f6;
-    border-radius: 7px; display: flex; align-items: center;
-    justify-content: center; font-size: 15px;
-  }
-  .nav-title { font-size: 14px; font-weight: 600; color: #f1f5f9; }
-  .nav-sub { font-size: 11px; color: #64748b; }
-  .nav-badge {
-    font-size: 11px; padding: 3px 10px;
-    background: #1e293b; border: 1px solid #334155;
-    border-radius: 20px; color: #94a3b8;
-  }
-
-  .tabs-bar {
-    display: flex; gap: 6px; padding: 8px 16px;
-    background: #0f1117; border-bottom: 1px solid #1f2937;
-    overflow-x: auto;
-  }
-  .tabs-bar::-webkit-scrollbar { display: none; }
-
-  .layout {
-    display: grid; grid-template-columns: 1fr 380px;
-    height: calc(100vh - 94px); overflow: hidden;
-  }
-  .tableau-panel {
-    background: #0f1117; border-right: 1px solid #1f2937;
-    padding: 14px; overflow: hidden;
-    display: flex; align-items: stretch;
-  }
-  tableau-viz { width: 100%; height: 100%; border-radius: 8px; }
+#MainMenu, header, footer, [data-testid="stToolbar"],
+[data-testid="stDecoration"], [data-testid="stStatusWidget"] { display:none !important; }
+section[data-testid="stMain"] > div { padding: 0 !important; }
+[data-testid="stAppViewContainer"] { background: #0f1117; }
+[data-testid="stVerticalBlock"] { gap: 0 !important; }
 </style>
 """, unsafe_allow_html=True)
 
 # ── Session state ─────────────────────────────────────────────────────────────
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "is_loading" not in st.session_state:
-    st.session_state.is_loading = False
 
 # ── Config ────────────────────────────────────────────────────────────────────
 TABLEAU_URL  = st.secrets.get("TABLEAU_URL",  "https://public.tableau.com")
@@ -90,62 +47,31 @@ SUGGESTIONS = [
 ]
 
 # ── Query params ──────────────────────────────────────────────────────────────
-params = st.query_params
+params     = st.query_params
 active_idx = int(params.get("view", 0))
 if active_idx >= len(VIEWS):
     active_idx = 0
-current_view = VIEWS[active_idx]
+current_view     = VIEWS[active_idx]
 tableau_full_url = f"{TABLEAU_URL.rstrip('/')}/{current_view['path'].lstrip('/')}"
 
-# ── Nav bar ───────────────────────────────────────────────────────────────────
-st.markdown(f"""
-<div class="nav-bar">
-  <div class="nav-left">
-    <div class="nav-icon">&#128202;</div>
-    <div>
-      <div class="nav-title">Tableau AI Assistant</div>
-      <div class="nav-sub">P&amp;L 리포트 분석</div>
-    </div>
-  </div>
-  <div class="nav-badge">Gemini 1.5 Flash + Tableau MCP</div>
-</div>
-""", unsafe_allow_html=True)
-
-# ── Tab bar ───────────────────────────────────────────────────────────────────
-tab_btns = ""
-for i, v in enumerate(VIEWS):
-    active_style = "color:#3b82f6;border-color:#3b82f640;background:#3b82f610;" if i == active_idx else "color:#64748b;border-color:#1f2937;background:transparent;"
-    tab_btns += f"""<button onclick="location.href=location.pathname+'?view={i}'"
-      style="font-size:12px;font-weight:500;padding:5px 13px;border-radius:6px;
-             border:1px solid;cursor:pointer;white-space:nowrap;{active_style}"
-    >{v['label']}</button>"""
-
-st.markdown(f'<div class="tabs-bar">{tab_btns}</div>', unsafe_allow_html=True)
-
-# ── AI helpers ────────────────────────────────────────────────────────────────
+# ── AI ────────────────────────────────────────────────────────────────────────
 def build_system_prompt():
     return """당신은 Tableau P&L 대시보드 전문 AI 어시스턴트입니다.
 현재 분석 중인 대시보드: "2월 Consolidated P&L Report (연결손익보고)"
 
-## 대시보드 주요 데이터 (2월 실적)
-- 매출액: Plan 1,470억 / Actual 1,482억 / 차이 +13억 / 달성률 100.9%
-- 수량: Plan 3,031천개 / Actual 2,950천개 / 차이 -82 / 달성률 97.3%
-- 중량: Plan 30,302ton / Actual 30,378ton / 달성률 100.3%
-- 판가(원/kg): Plan 4,850 / Actual 4,879 / 달성률 100.6%
+## 2월 실적 데이터
+- 매출액: Plan 1,470억 / Actual 1,482억 / 달성률 100.9%
+- 수량: Plan 3,031천개 / Actual 2,950천개 / 달성률 97.3%
 - 매출원가: Plan 996억 / Actual 1,004억 / 달성률 100.8%
 - 매출총이익: Plan 473억 / Actual 478억 / 달성률 101.1%
-- 판매관리비: Plan 450억 / Actual 434억 / 달성률 96.4% (절감)
-- 영업이익: Plan 23억 / Actual 44억 / 차이 +21억 / 달성률 191.8%
-- 이익률: Plan 1.6% / Actual 3.0% / 달성률 190.2%
+- 판매관리비: Plan 450억 / Actual 434억 / 달성률 96.4%
+- 영업이익: Plan 23억 / Actual 44억 / 달성률 191.8%
+- 이익률: Plan 1.6% / Actual 3.0%
 
-## 영업이익 차이 요인 분해 (워터폴)
-- 계획 23억 → 환율+18 / 원재료단가+1 / 원재료물량-1 / 매출판가-18 / 매출물량+8 / 가공비변동-5 / 가공비고정+3 / 판매비변동-16 → 실적 44억
+## 영업이익 요인 분해
+계획 23억 → 환율+18 / 원재료단가+1 / 원재료물량-1 / 매출판가-18 / 매출물량+8 / 가공비변동-5 / 가공비고정+3 / 판매비변동-16 → 실적 44억
 
-## 응답 가이드
-- 한국어로 간결하게 답변
-- 숫자는 억원 단위, % 포함
-- 데이터 기반으로만 답변
-"""
+한국어로 간결하게, 숫자는 억원/% 단위로 답변하세요."""
 
 def get_ai_response(user_msg: str) -> str:
     genai.configure(api_key=GEMINI_KEY)
@@ -158,8 +84,7 @@ def get_ai_response(user_msg: str) -> str:
         role = "model" if m["role"] == "assistant" else "user"
         history.append({"role": role, "parts": [m["content"]]})
     chat = model.start_chat(history=history)
-    response = chat.send_message(user_msg)
-    return response.text
+    return chat.send_message(user_msg).text
 
 # ── Process incoming message ──────────────────────────────────────────────────
 incoming = params.get("msg", "")
@@ -177,9 +102,10 @@ if incoming:
         st.query_params.update(new_params)
         st.rerun()
 
-# ── Build chat HTML ───────────────────────────────────────────────────────────
+# ── Build messages HTML ───────────────────────────────────────────────────────
 def escape(s):
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    return (s.replace("&","&amp;").replace("<","&lt;")
+             .replace(">","&gt;").replace('"',"&quot;"))
 
 def md_to_html(text):
     text = escape(text)
@@ -203,124 +129,234 @@ def md_to_html(text):
         out += "</ul>"
     return out
 
-# Messages HTML
 if not st.session_state.messages:
     msgs_html = """
-    <div style="display:flex;flex-direction:column;align-items:center;
-                justify-content:center;height:100%;gap:10px;color:#475569;padding:20px;">
-      <div style="font-size:26px;">&#128202;</div>
-      <div style="font-size:13px;font-weight:500;color:#64748b;">무엇이든 물어보세요</div>
-      <div style="font-size:11px;text-align:center;line-height:1.8;color:#334155;">
-        대시보드 수치, 달성률, 요인 분석<br>BG별 실적 비교까지 답해드립니다
-      </div>
+    <div class="empty-state">
+      <div style="font-size:28px;margin-bottom:8px;">&#128202;</div>
+      <div class="empty-title">무엇이든 물어보세요</div>
+      <div class="empty-sub">대시보드 수치, 달성률, 요인 분석<br>BG별 실적 비교까지 답해드립니다</div>
     </div>"""
 else:
     msgs_html = ""
     for m in st.session_state.messages:
-        content = md_to_html(m["content"])
+        body = md_to_html(m["content"])
         if m["role"] == "user":
             msgs_html += f"""
-            <div style="display:flex;flex-direction:row-reverse;gap:8px;align-items:flex-start;margin-bottom:10px;">
-              <div style="width:26px;height:26px;border-radius:7px;background:#1e293b;border:1px solid #334155;
-                          display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;
-                          color:#94a3b8;flex-shrink:0;">나</div>
-              <div style="max-width:80%;padding:9px 12px;border-radius:11px;border-bottom-right-radius:3px;
-                          background:#1d3461;border:1px solid #2d4a7a;font-size:12px;line-height:1.6;color:#bfdbfe;">
-                {content}</div>
+            <div class="msg-row user">
+              <div class="bubble user-bubble">{body}</div>
+              <div class="avatar user-av">나</div>
             </div>"""
         else:
             msgs_html += f"""
-            <div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:10px;">
-              <div style="width:26px;height:26px;border-radius:7px;background:#3b82f6;
-                          display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;
-                          color:white;flex-shrink:0;">AI</div>
-              <div style="max-width:80%;padding:9px 12px;border-radius:11px;border-bottom-left-radius:3px;
-                          background:#161b27;border:1px solid #1f2937;font-size:12px;line-height:1.6;color:#e2e8f0;">
-                {content}</div>
+            <div class="msg-row">
+              <div class="avatar ai-av">AI</div>
+              <div class="bubble ai-bubble">{body}</div>
             </div>"""
 
-# Chips HTML
-chips_html = ""
-for s in SUGGESTIONS:
-    chips_html += f"""<button onclick="sendMsg('{s}')"
-      style="font-size:11px;padding:4px 11px;background:#1e293b;border:1px solid #1f2937;
-             border-radius:20px;color:#64748b;cursor:pointer;white-space:nowrap;">
-      {s}</button>"""
+# ── Tab buttons ───────────────────────────────────────────────────────────────
+tab_btns = ""
+for i, v in enumerate(VIEWS):
+    is_active = (i == active_idx)
+    tab_btns += f"""
+    <button class="tab-btn {'active' if is_active else ''}"
+            onclick="gotoView({i})">{v['label']}</button>"""
 
-# Full chat component HTML
-chat_html = f"""<!DOCTYPE html>
-<html>
+# ── Chip buttons ──────────────────────────────────────────────────────────────
+chips = "".join(
+    f'<button class="chip" onclick="sendMsg(\'{s}\')">{s}</button>'
+    for s in SUGGESTIONS
+)
+
+# ── Full page HTML (single components.html call) ──────────────────────────────
+page_html = f"""<!DOCTYPE html>
+<html lang="ko">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script type="module" src="https://public.tableau.com/javascripts/api/tableau.embedding.3.latest.min.js"></script>
 <style>
-  * {{ margin:0; padding:0; box-sizing:border-box; font-family:'Inter',sans-serif; }}
-  body {{ background:#0f1117; height:100vh; display:flex; flex-direction:column; overflow:hidden; }}
+*, *::before, *::after {{ margin:0; padding:0; box-sizing:border-box; font-family:'Inter',sans-serif; }}
+html, body {{ height:100%; background:#0f1117; overflow:hidden; }}
 
-  .chat-header {{
-    padding:12px 16px; background:#161b27; border-bottom:1px solid #1f2937; flex-shrink:0;
-  }}
-  .chat-header-title {{ font-size:13px;font-weight:600;color:#e2e8f0;margin-bottom:3px; }}
-  .chat-header-sub {{ font-size:11px;color:#475569; }}
+/* ── Nav ── */
+.nav {{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:11px 20px; background:#161b27; border-bottom:1px solid #1f2937;
+  height:52px;
+}}
+.nav-left {{ display:flex; align-items:center; gap:10px; }}
+.nav-icon {{
+  width:28px; height:28px; background:#3b82f6; border-radius:7px;
+  display:flex; align-items:center; justify-content:center; font-size:14px;
+}}
+.nav-title {{ font-size:14px; font-weight:600; color:#f1f5f9; }}
+.nav-sub   {{ font-size:10px; color:#64748b; margin-top:1px; }}
+.nav-badge {{
+  font-size:10px; padding:3px 10px;
+  background:#1e293b; border:1px solid #334155;
+  border-radius:20px; color:#94a3b8;
+}}
 
-  .chips {{
-    display:flex;flex-wrap:wrap;gap:5px;padding:8px 12px;
-    border-bottom:1px solid #1f2937;flex-shrink:0;background:#0f1117;
-  }}
-  .chips button:hover {{ color:#3b82f6 !important; border-color:#3b82f640 !important; background:#3b82f610 !important; }}
+/* ── Tab bar ── */
+.tab-bar {{
+  display:flex; gap:5px; padding:7px 14px; height:40px;
+  background:#0f1117; border-bottom:1px solid #1f2937; overflow-x:auto;
+}}
+.tab-bar::-webkit-scrollbar {{ display:none; }}
+.tab-btn {{
+  font-size:11px; font-weight:500; padding:4px 12px;
+  border-radius:6px; border:1px solid #1f2937;
+  color:#64748b; background:transparent; cursor:pointer; white-space:nowrap;
+  transition:all .15s;
+}}
+.tab-btn:hover  {{ color:#94a3b8; border-color:#334155; background:#1e293b; }}
+.tab-btn.active {{ color:#3b82f6; border-color:#3b82f640; background:#3b82f610; }}
 
-  .messages {{
-    flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;
-    scrollbar-width:thin;scrollbar-color:#1f2937 transparent;
-  }}
-  .messages::-webkit-scrollbar {{ width:3px; }}
-  .messages::-webkit-scrollbar-thumb {{ background:#1f2937;border-radius:3px; }}
-  .messages p {{ margin:0 0 4px; }}
-  .messages ul {{ margin:4px 0 4px 14px; }}
-  .messages li {{ margin-bottom:3px;color:#cbd5e1; }}
-  .messages strong {{ color:#60a5fa; }}
-  .messages code {{ font-size:11px;background:#0f1117;padding:1px 4px;border-radius:3px;color:#7dd3fc; }}
+/* ── Main grid ── */
+.grid {{
+  display:grid; grid-template-columns:1fr 370px;
+  height:calc(100vh - 92px);
+}}
 
-  .input-area {{
-    padding:10px 12px 12px;background:#0f1117;border-top:1px solid #1f2937;flex-shrink:0;
-  }}
-  .input-row {{
-    display:flex;gap:6px;align-items:flex-end;
-    background:#161b27;border:1px solid #1f2937;border-radius:10px;padding:8px 10px;
-  }}
-  .input-row:focus-within {{ border-color:#3b82f640; }}
-  textarea {{
-    flex:1;background:transparent;border:none;outline:none;
-    color:#e2e8f0;font-size:12px;font-family:'Inter',sans-serif;
-    resize:none;min-height:20px;max-height:100px;line-height:1.5;
-    scrollbar-width:none;
-  }}
-  textarea::placeholder {{ color:#334155; }}
-  button.send {{
-    width:28px;height:28px;border-radius:7px;border:none;
-    background:#3b82f6;color:white;cursor:pointer;font-size:14px;flex-shrink:0;
-  }}
-  button.send:hover {{ background:#2563eb; }}
-  .hint {{ font-size:10px;color:#1f2937;margin-top:5px;text-align:center; }}
+/* ── Tableau panel ── */
+.tableau-panel {{
+  background:#0f1117; border-right:1px solid #1f2937;
+  padding:12px; display:flex; overflow:hidden;
+}}
+tableau-viz {{ width:100%; height:100%; border-radius:8px; }}
+
+/* ── Chat panel ── */
+.chat-panel {{
+  display:flex; flex-direction:column; background:#0f1117; overflow:hidden;
+}}
+.chat-header {{
+  padding:11px 14px; background:#161b27;
+  border-bottom:1px solid #1f2937; flex-shrink:0;
+}}
+.chat-header-title {{ font-size:12px; font-weight:600; color:#e2e8f0; margin-bottom:2px; }}
+.chat-header-sub   {{ font-size:10px; color:#475569; }}
+
+/* ── Chips ── */
+.chips {{
+  display:flex; flex-wrap:wrap; gap:4px; padding:7px 10px;
+  border-bottom:1px solid #1f2937; flex-shrink:0; background:#0f1117;
+}}
+.chip {{
+  font-size:10px; padding:3px 9px;
+  background:#1e293b; border:1px solid #1f2937;
+  border-radius:20px; color:#64748b; cursor:pointer; white-space:nowrap;
+  transition:all .15s;
+}}
+.chip:hover {{ color:#3b82f6; border-color:#3b82f640; background:#3b82f610; }}
+
+/* ── Messages ── */
+.messages {{
+  flex:1; overflow-y:auto; padding:10px;
+  display:flex; flex-direction:column; gap:8px;
+  scrollbar-width:thin; scrollbar-color:#1f2937 transparent;
+}}
+.messages::-webkit-scrollbar {{ width:3px; }}
+.messages::-webkit-scrollbar-thumb {{ background:#1f2937; border-radius:3px; }}
+
+.empty-state {{
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  height:100%; gap:6px; padding:20px;
+}}
+.empty-title {{ font-size:13px; font-weight:500; color:#64748b; }}
+.empty-sub   {{ font-size:11px; color:#334155; text-align:center; line-height:1.7; }}
+
+.msg-row {{ display:flex; gap:7px; align-items:flex-start; }}
+.msg-row.user {{ flex-direction:row-reverse; }}
+.avatar {{
+  width:24px; height:24px; border-radius:6px; flex-shrink:0;
+  display:flex; align-items:center; justify-content:center;
+  font-size:9px; font-weight:600;
+}}
+.ai-av   {{ background:#3b82f6; color:white; }}
+.user-av {{ background:#1e293b; border:1px solid #334155; color:#94a3b8; }}
+.bubble {{
+  max-width:82%; padding:8px 11px; border-radius:10px;
+  font-size:11px; line-height:1.65; color:#e2e8f0;
+}}
+.ai-bubble   {{ background:#161b27; border:1px solid #1f2937; border-bottom-left-radius:3px; }}
+.user-bubble {{ background:#1d3461; border:1px solid #2d4a7a; border-bottom-right-radius:3px; color:#bfdbfe; }}
+.bubble p    {{ margin:0 0 3px; }}
+.bubble ul   {{ margin:3px 0 3px 13px; }}
+.bubble li   {{ margin-bottom:2px; color:#cbd5e1; }}
+.bubble strong {{ color:#60a5fa; }}
+.bubble code   {{ font-size:10px; background:#0f1117; padding:1px 4px; border-radius:3px; color:#7dd3fc; }}
+
+/* ── Input ── */
+.input-area {{
+  padding:8px 10px 10px; background:#0f1117;
+  border-top:1px solid #1f2937; flex-shrink:0;
+}}
+.input-row {{
+  display:flex; gap:5px; align-items:flex-end;
+  background:#161b27; border:1px solid #1f2937;
+  border-radius:9px; padding:7px 9px;
+}}
+.input-row:focus-within {{ border-color:#3b82f640; }}
+textarea {{
+  flex:1; background:transparent; border:none; outline:none;
+  color:#e2e8f0; font-size:11px; font-family:'Inter',sans-serif;
+  resize:none; line-height:1.5; max-height:80px; scrollbar-width:none;
+}}
+textarea::placeholder {{ color:#334155; }}
+.send-btn {{
+  width:26px; height:26px; border-radius:6px; border:none;
+  background:#3b82f6; color:white; cursor:pointer; font-size:13px; flex-shrink:0;
+}}
+.send-btn:hover {{ background:#2563eb; }}
+.hint {{ font-size:9px; color:#1e293b; margin-top:4px; text-align:center; }}
 </style>
 </head>
 <body>
 
-<div class="chat-header">
-  <div class="chat-header-title">&#129302; AI 분석 어시스턴트</div>
-  <div class="chat-header-sub">P&amp;L 데이터에 대해 자유롭게 질문하세요</div>
+<!-- Nav -->
+<div class="nav">
+  <div class="nav-left">
+    <div class="nav-icon">&#128202;</div>
+    <div>
+      <div class="nav-title">Tableau AI Assistant</div>
+      <div class="nav-sub">P&amp;L 리포트 분석</div>
+    </div>
+  </div>
+  <div class="nav-badge">Gemini 1.5 Flash + Tableau MCP</div>
 </div>
 
-<div class="chips">{chips_html}</div>
+<!-- Tabs -->
+<div class="tab-bar">{tab_btns}</div>
 
-<div class="messages" id="msgs">{msgs_html}</div>
+<!-- Grid -->
+<div class="grid">
 
-<div class="input-area">
-  <div class="input-row">
-    <textarea id="inp" rows="1" placeholder="질문을 입력하세요... (Enter 전송)"></textarea>
-    <button class="send" onclick="send()">&#8593;</button>
+  <!-- Tableau -->
+  <div class="tableau-panel">
+    <tableau-viz id="tviz" src="{tableau_full_url}" toolbar="hidden" hide-tabs="true"></tableau-viz>
   </div>
-  <div class="hint">Gemini 1.5 Flash powered · Tableau MCP connected</div>
+
+  <!-- Chat -->
+  <div class="chat-panel">
+    <div class="chat-header">
+      <div class="chat-header-title">&#129302; AI 분석 어시스턴트</div>
+      <div class="chat-header-sub">P&amp;L 데이터에 대해 자유롭게 질문하세요</div>
+    </div>
+
+    <div class="chips">{chips}</div>
+
+    <div class="messages" id="msgs">{msgs_html}</div>
+
+    <div class="input-area">
+      <div class="input-row">
+        <textarea id="inp" rows="1" placeholder="질문을 입력하세요... (Enter 전송)"></textarea>
+        <button class="send-btn" onclick="send()">&#8593;</button>
+      </div>
+      <div class="hint">Gemini 1.5 Flash powered · Tableau MCP connected</div>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -331,11 +367,17 @@ const ta = document.getElementById('inp');
 if (ta) {{
   ta.addEventListener('input', () => {{
     ta.style.height = 'auto';
-    ta.style.height = Math.min(ta.scrollHeight, 100) + 'px';
+    ta.style.height = Math.min(ta.scrollHeight, 80) + 'px';
   }});
   ta.addEventListener('keydown', e => {{
     if (e.key === 'Enter' && !e.shiftKey) {{ e.preventDefault(); send(); }}
   }});
+}}
+
+function gotoView(idx) {{
+  const url = new URL(window.parent.location.href);
+  url.searchParams.set('view', idx);
+  window.parent.location.href = url.toString();
 }}
 
 function sendMsg(text) {{
@@ -347,22 +389,10 @@ function sendMsg(text) {{
 
 function send() {{
   const msg = ta ? ta.value.trim() : '';
-  if (!msg) return;
-  sendMsg(msg);
+  if (msg) sendMsg(msg);
 }}
 </script>
 </body>
 </html>"""
 
-# ── Render layout ─────────────────────────────────────────────────────────────
-st.markdown(f"""
-<script type="module" src="https://public.tableau.com/javascripts/api/tableau.embedding.3.latest.min.js"></script>
-<div class="layout">
-  <div class="tableau-panel">
-    <tableau-viz id="tableauViz" src="{tableau_full_url}" toolbar="hidden" hide-tabs="true"></tableau-viz>
-  </div>
-</div>
-""", unsafe_allow_html=True)
-
-# Chat panel via component (avoids markdown parsing issues)
-components.html(chat_html, height=600, scrolling=False)
+components.html(page_html, height=800, scrolling=False)
